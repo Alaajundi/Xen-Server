@@ -57,89 +57,140 @@
 
 - name: Configure data network bonds
   block:
-    - name: Get data network UUID
+    - name: Create multiple data networks for VLANs
       ansible.builtin.shell: |
-        xe network-list name-label="{{ data_network_name }}" --minimal
-      register: data_network_uuid
-      changed_when: false
-      tags:
-        - postconfig
-        - network
-
-    - name: Create data network if not exists
-      ansible.builtin.command: |
-        xe network-create name-label="{{ data_network_name }}" name-description="VM Data Network"
-      when: data_network_uuid.stdout == ""
-      register: new_data_network
-      tags:
-        - postconfig
-        - network
-
-    - name: Set data network UUID
-      ansible.builtin.set_fact:
-        data_net_uuid: "{{ data_network_uuid.stdout if data_network_uuid.stdout != '' else new_data_network.stdout }}"
-      tags:
-        - postconfig
-        - network
-
-    - name: Create VLANs for data interfaces
-      ansible.builtin.shell: |
-        # Get PIFs for data interfaces
-        PIF_ETH2=$(xe pif-list device=eth2 --minimal)
-        PIF_ETH3=$(xe pif-list device=eth3 --minimal)
+        # Create or verify network exists
+        EXISTING_NET=$(xe network-list name-label="{{ item.network_name }}" --minimal)
         
-        # Create VLAN PIFs
-        {% if data_vlan is defined and data_vlan %}
-        if [ -n "$PIF_ETH2" ]; then
-          VLAN_PIF2=$(xe vlan-create pif-uuid=$PIF_ETH2 vlan={{ data_vlan }} network-uuid={{ data_net_uuid }} 2>&1 || echo "")
-          echo "VLAN created on eth2: $VLAN_PIF2"
+        if [ -z "$EXISTING_NET" ]; then
+          NET_UUID=$(xe network-create name-label="{{ item.network_name }}" name-description="{{ item.description }}")
+          echo "Created network: {{ item.network_name }} ($NET_UUID)"
+        else
+          echo "Network already exists: {{ item.network_name }} ($EXISTING_NET)"
+          NET_UUID=$EXISTING_NET
         fi
-        
-        if [ -n "$PIF_ETH3" ]; then
-          VLAN_PIF3=$(xe vlan-create pif-uuid=$PIF_ETH3 vlan={{ data_vlan }} network-uuid={{ data_net_uuid }} 2>&1 || echo "")
-          echo "VLAN created on eth3: $VLAN_PIF3"
-        fi
-        {% else %}
-        echo "No VLAN configuration needed"
-        {% endif %}
-      register: vlan_result
-      changed_when: "'VLAN created' in vlan_result.stdout"
+        echo "$NET_UUID"
+      loop: "{{ data_vlans | default([]) }}"
+      register: data_networks_created
+      changed_when: "'Created network' in item.stdout"
+      when: data_vlans is defined and data_vlans | length > 0
       tags:
         - postconfig
         - network
         - vlan
 
-    - name: Create data bond (bond1) with LACP
+    - name: Display created networks
+      ansible.builtin.debug:
+        msg: "Network {{ item.item.network_name }} (VLAN {{ item.item.vlan_id }}): {{ item.stdout_lines[-1] }}"
+      loop: "{{ data_networks_created.results }}"
+      when: data_networks_created is defined and data_networks_created.results is defined
+      tags:
+        - postconfig
+        - network
+
+    - name: Create VLANs on data interfaces (eth2, eth3)
       ansible.builtin.shell: |
-        # Check if data bond exists
-        EXISTING_BOND=$(xe bond-list | grep -c "bond1" || true)
+        # Get base network UUID
+        NET_UUID="{{ item.stdout_lines[-1] }}"
+        VLAN_TAG="{{ item.item.vlan_id }}"
+        NETWORK_NAME="{{ item.item.network_name }}"
         
-        if [ "$EXISTING_BOND" -eq "0" ]; then
-          {% if data_vlan is defined and data_vlan %}
-          # Get VLAN PIFs
-          VLAN_PIF2=$(xe vlan-list tag={{ data_vlan }} | grep "^uuid" | awk '{print $NF}' | head -1)
-          VLAN_PIF3=$(xe vlan-list tag={{ data_vlan }} | grep "^uuid" | awk '{print $NF}' | tail -1)
-          {% else %}
-          # Get physical PIFs
-          VLAN_PIF2=$(xe pif-list device=eth2 --minimal)
-          VLAN_PIF3=$(xe pif-list device=eth3 --minimal)
-          {% endif %}
-          
-          if [ -n "$VLAN_PIF2" ] && [ -n "$VLAN_PIF3" ]; then
-            xe bond-create network-uuid={{ data_net_uuid }} pif-uuids=$VLAN_PIF2,$VLAN_PIF3 mode=lacp
-            echo "Data bond created with LACP"
-          else
-            echo "VLANs PIFs not found for bonding"
-          fi
+        # Get PIFs for data interfaces
+        PIF_ETH2=$(xe pif-list device=eth2 host-uuid={{ xenserver_host_uuid }} --minimal)
+        PIF_ETH3=$(xe pif-list device=eth3 host-uuid={{ xenserver_host_uuid }} --minimal)
+        
+        echo "Creating VLAN $VLAN_TAG on data interfaces for $NETWORK_NAME"
+        
+        # Check if VLAN already exists on eth2
+        EXISTING_VLAN2=$(xe vlan-list tag=$VLAN_TAG | grep -A 10 "uuid" | grep -B 5 "eth2" | grep "^uuid" | awk '{print $NF}' | head -1 || echo "")
+        
+        if [ -n "$PIF_ETH2" ] && [ -z "$EXISTING_VLAN2" ]; then
+          VLAN_PIF2=$(xe vlan-create pif-uuid=$PIF_ETH2 vlan=$VLAN_TAG network-uuid=$NET_UUID 2>&1)
+          echo "Created VLAN $VLAN_TAG on eth2: $VLAN_PIF2"
         else
-          echo "Data bond already exists"
+          echo "VLAN $VLAN_TAG on eth2 already exists or PIF not found"
         fi
-      register: data_bond_result
-      changed_when: "'Data bond created' in data_bond_result.stdout"
+        
+        # Check if VLAN already exists on eth3
+        EXISTING_VLAN3=$(xe vlan-list tag=$VLAN_TAG | grep -A 10 "uuid" | grep -B 5 "eth3" | grep "^uuid" | awk '{print $NF}' | head -1 || echo "")
+        
+        if [ -n "$PIF_ETH3" ] && [ -z "$EXISTING_VLAN3" ]; then
+          VLAN_PIF3=$(xe vlan-create pif-uuid=$PIF_ETH3 vlan=$VLAN_TAG network-uuid=$NET_UUID 2>&1)
+          echo "Created VLAN $VLAN_TAG on eth3: $VLAN_PIF3"
+        else
+          echo "VLAN $VLAN_TAG on eth3 already exists or PIF not found"
+        fi
+      loop: "{{ data_networks_created.results }}"
+      when: 
+        - data_networks_created is defined
+        - data_networks_created.results is defined
+        - item.stdout_lines is defined
+      register: vlans_created
+      changed_when: "'Created VLAN' in item.stdout"
+      tags:
+        - postconfig
+        - network
+        - vlan
+
+    - name: Create data bonds for each VLAN network
+      ansible.builtin.shell: |
+        VLAN_TAG="{{ item.item.vlan_id }}"
+        NET_UUID="{{ item.stdout_lines[-1] }}"
+        NETWORK_NAME="{{ item.item.network_name }}"
+        
+        # Check if bond already exists for this network
+        EXISTING_BOND=$(xe bond-list | grep -A 20 "uuid" | grep -B 10 "$NETWORK_NAME" | grep "^uuid" | awk '{print $NF}' | head -1 || echo "")
+        
+        if [ -n "$EXISTING_BOND" ]; then
+          echo "Bond already exists for $NETWORK_NAME: $EXISTING_BOND"
+          exit 0
+        fi
+        
+        # Get VLAN PIFs for this VLAN tag
+        VLAN_PIFS=$(xe vlan-list tag=$VLAN_TAG params=uuid --minimal | tr ',' '\n' | head -2)
+        
+        if [ -z "$VLAN_PIFS" ]; then
+          echo "No VLAN PIFs found for VLAN $VLAN_TAG"
+          exit 1
+        fi
+        
+        # Count PIFs (need at least 2 for bonding)
+        PIF_COUNT=$(echo "$VLAN_PIFS" | wc -l)
+        
+        if [ "$PIF_COUNT" -ge 2 ]; then
+          # Get the two PIFs
+          PIF1=$(echo "$VLAN_PIFS" | head -1)
+          PIF2=$(echo "$VLAN_PIFS" | tail -1)
+          
+          # Create bond
+          BOND_UUID=$(xe bond-create network-uuid=$NET_UUID pif-uuids=$PIF1,$PIF2 mode=lacp 2>&1)
+          echo "Created LACP bond for $NETWORK_NAME (VLAN $VLAN_TAG): $BOND_UUID"
+        else
+          echo "Not enough PIFs ($PIF_COUNT) for bonding VLAN $VLAN_TAG"
+        fi
+      loop: "{{ data_networks_created.results }}"
+      when:
+        - data_networks_created is defined
+        - data_networks_created.results is defined
+        - item.stdout_lines is defined
+      register: bonds_created
+      changed_when: "'Created LACP bond' in item.stdout"
+      failed_when: false
       tags:
         - postconfig
         - network
         - bonds
+
+    - name: Display bond creation summary
+      ansible.builtin.debug:
+        msg: "{{ item.stdout_lines }}"
+      loop: "{{ bonds_created.results }}"
+      when: 
+        - bonds_created is defined
+        - bonds_created.results is defined
+      tags:
+        - postconfig
+        - network
 
 - name: Configure NTP servers
   ansible.builtin.shell: |

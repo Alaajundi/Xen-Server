@@ -63,6 +63,10 @@ raid_config:
     - /dev/sdb
   use_all_space: true
 
-# Data Network VLAN
-data_vlan: 200
-data_network_name: "VM-Network"
+# Data Network VLANs
+# Defined centrally in group_vars/all.yml (applies to all hosts)
+# To override for this specific host, uncomment and customize:
+# data_vlans:
+#   - vlan_id: 999
+#     network_name: "Host-Specific-Network"
+#     description: "Only on this host"

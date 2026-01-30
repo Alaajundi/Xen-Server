@@ -55,6 +55,31 @@ data_network:
   vlan: 200
   mtu: 9000
 
+# ==============================================================
+# CENTRALIZED VLAN CONFIGURATION (Edit here for ALL hosts)
+# ==============================================================
+# To add a new VLAN: Just add one entry here and run the playbook
+# All hosts will automatically get the new VLAN
+# ==============================================================
+data_vlans:
+  - vlan_id: 200
+    network_name: "VM-Network-VLAN200"
+    description: "Production VM Network"
+    
+  - vlan_id: 201
+    network_name: "VM-Network-VLAN201"
+    description: "Development VM Network"
+    
+  - vlan_id: 202
+    network_name: "VM-Network-VLAN202"
+    description: "DMZ Network"
+
+# To add a new VLAN to ALL 30 hosts, just add here:
+#  - vlan_id: 203
+#    network_name: "VM-Network-VLAN203"
+#    description: "Staging Environment"
+# ==============================================================
+
 # Installation Monitoring
 installation_timeout: 3600  # 1 hour
 installation_check_interval: 60  # Check every 60 seconds
