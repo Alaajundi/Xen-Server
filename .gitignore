@@ -1,0 +1,12 @@
+*.retry
+.vault_pass
+/tmp/
+*.log
+*.pyc
+__pycache__/
+.DS_Store
+files/*.iso
+files/*.xml
+/http_root/
+inventory/host_vars/*vault*
+group_vars/*vault*
