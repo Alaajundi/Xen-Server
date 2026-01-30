@@ -1,0 +1,60 @@
+---
+# Global variables for all hosts
+
+# Ansible connection settings
+ansible_user: root
+ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+
+# HTTP Server Configuration (where ISO and answer files are hosted)
+http_server_ip: 192.168.1.10
+http_server_port: 8080
+http_root_dir: /var/www/xenserver
+iso_filename: XenServer-8.iso
+answer_file_url: "http://{{ http_server_ip }}:{{ http_server_port }}/answerfiles"
+iso_url: "http://{{ http_server_ip }}:{{ http_server_port }}/{{ iso_filename }}"
+
+# XenServer Installation Settings
+xenserver_version: "8.2"
+xenserver_root_password: "{{ vault_xenserver_root_password | default('ChangeMe123!') }}"
+xenserver_timezone: "America/New_York"
+xenserver_keyboard: "us"
+xenserver_ntp_servers:
+  - 0.pool.ntp.org
+  - 1.pool.ntp.org
+
+# SSH Key Configuration
+ssh_key_deployment: true
+ssh_public_key: "{{ vault_ssh_public_key | default('') }}"
+ssh_disable_password_auth: false  # Set to true for key-only authentication
+
+# XenServer Pool Configuration
+create_pool: true
+pool_name: "Production-Pool"
+pool_description: "XenServer Production Pool"
+# Pool master is defined per-host in host_vars (xenserver_pool_master: true/false)
+
+# Storage Configuration
+disk_layout: raid1
+use_all_disk_space: true
+primary_disk: /dev/sda
+
+# Fiber Channel Storage (for VMs - enables live migration like VMware vMotion)
+fc_storage_enabled: true
+fc_sr_name: "FC-Shared-Storage"
+fc_sr_description: "Fiber Channel Shared Storage for Live Migration"
+create_fc_sr: true
+set_fc_sr_as_default: true  # Makes FC storage default for VMs
+# Note: Local RAID storage will be used for host OS only
+
+# Network Configuration Defaults
+management_network:
+  vlan: 100
+  mtu: 1500
+  
+data_network:
+  vlan: 200
+  mtu: 9000
+
+# Installation Monitoring
+installation_timeout: 3600  # 1 hour
+installation_check_interval: 60  # Check every 60 seconds

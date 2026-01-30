@@ -1,0 +1,117 @@
+---
+# Tasks for http_server role - Sets up HTTP server for ISO and answer file delivery
+
+- name: Ensure HTTP root directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+  loop: "{{ http_directories }}"
+  tags:
+    - http_server
+    - setup
+
+- name: Check if XenServer ISO exists
+  ansible.builtin.stat:
+    path: "{{ http_root_dir }}/{{ iso_filename }}"
+  register: iso_file_check
+  tags:
+    - http_server
+    - validation
+
+- name: Display ISO file status
+  ansible.builtin.debug:
+    msg: >
+      {% if iso_file_check.stat.exists %}
+      ISO file found: {{ http_root_dir }}/{{ iso_filename }}
+      {% else %}
+      WARNING: ISO file not found. Please copy XenServer ISO to {{ http_root_dir }}/{{ iso_filename }}
+      {% endif %}
+  tags:
+    - http_server
+    - validation
+
+- name: Check if Python3 is installed
+  ansible.builtin.command: which python3
+  register: python3_check
+  changed_when: false
+  failed_when: false
+  tags:
+    - http_server
+
+- name: Ensure Python3 is available
+  ansible.builtin.package:
+    name: python3
+    state: present
+  when: python3_check.rc != 0
+  become: true
+  tags:
+    - http_server
+
+- name: Check if HTTP server is already running
+  ansible.builtin.shell: |
+    ps aux | grep '[p]ython3 -m http.server {{ http_server_port }}'
+  register: http_server_running
+  changed_when: false
+  failed_when: false
+  tags:
+    - http_server
+
+- name: Start Python HTTP server in background
+  ansible.builtin.shell: |
+    nohup {{ python_http_cmd }} > {{ http_root_dir }}/http_server.log 2>&1 &
+    echo $! > {{ http_root_dir }}/http_server.pid
+  when: http_server_running.rc != 0
+  tags:
+    - http_server
+    - start
+
+- name: Wait for HTTP server to be ready
+  ansible.builtin.wait_for:
+    host: "{{ http_server_bind }}"
+    port: "{{ http_server_port }}"
+    delay: 2
+    timeout: 30
+  tags:
+    - http_server
+    - validation
+
+- name: Display HTTP server information
+  ansible.builtin.debug:
+    msg:
+      - "HTTP Server is running at: http://{{ http_server_ip }}:{{ http_server_port }}"
+      - "ISO URL: {{ iso_url }}"
+      - "Answer files directory: {{ answer_file_url }}"
+      - "Server root: {{ http_root_dir }}"
+      - "Log file: {{ http_root_dir }}/http_server.log"
+  tags:
+    - http_server
+    - info
+
+- name: Create HTTP server status script
+  ansible.builtin.copy:
+    content: |
+      #!/bin/bash
+      # Check HTTP server status
+      
+      PID_FILE="{{ http_root_dir }}/http_server.pid"
+      
+      if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        if ps -p $PID > /dev/null 2>&1; then
+          echo "HTTP Server is running (PID: $PID)"
+          echo "URL: http://{{ http_server_ip }}:{{ http_server_port }}"
+          exit 0
+        else
+          echo "HTTP Server is not running (stale PID file)"
+          exit 1
+        fi
+      else
+        echo "HTTP Server is not running"
+        exit 1
+      fi
+    dest: "{{ http_root_dir }}/check_server.sh"
+    mode: '0755'
+  tags:
+    - http_server
+    - scripts

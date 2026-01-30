@@ -1,0 +1,19 @@
+---
+# Default variables for http_server role
+
+# HTTP server type (nginx, apache, python)
+http_server_type: python
+
+# HTTP server configuration
+http_server_bind: "0.0.0.0"
+http_server_port: 8080
+http_root_dir: "{{ playbook_dir }}/../http_root"
+
+# Directories to create
+http_directories:
+  - "{{ http_root_dir }}"
+  - "{{ http_root_dir }}/answerfiles"
+  - "{{ http_root_dir }}/scripts"
+
+# Python HTTP server command
+python_http_cmd: "python3 -m http.server {{ http_server_port }} --bind {{ http_server_bind }} --directory {{ http_root_dir }}"

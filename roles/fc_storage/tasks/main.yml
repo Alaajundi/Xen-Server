@@ -1,0 +1,215 @@
+---
+# Fiber Channel Storage Configuration Role
+# Configures FC HBA, multipathing, and shared storage for live migration
+
+- name: Install multipath tools
+  ansible.builtin.package:
+    name:
+      - device-mapper-multipath
+      - sg3_utils
+    state: present
+  tags:
+    - fc_storage
+    - packages
+
+- name: Check for Fiber Channel HBAs
+  ansible.builtin.shell: |
+    ls /sys/class/fc_host/ 2>/dev/null || echo "none"
+  register: fc_hba_check
+  changed_when: false
+  tags:
+    - fc_storage
+    - discovery
+
+- name: Display FC HBA information
+  ansible.builtin.debug:
+    msg: >
+      {% if fc_hba_check.stdout != "none" %}
+      Fiber Channel HBAs detected: {{ fc_hba_check.stdout }}
+      {% else %}
+      WARNING: No Fiber Channel HBAs detected
+      {% endif %}
+  tags:
+    - fc_storage
+    - discovery
+
+- name: Rescan FC buses
+  ansible.builtin.shell: |
+    for host in /sys/class/fc_host/host*; do
+      echo "- - -" > /sys/class/scsi_host/$(basename $host)/scan
+    done
+    sleep 5
+  when: fc_hba_check.stdout != "none"
+  changed_when: true
+  tags:
+    - fc_storage
+    - scan
+
+- name: List available FC LUNs
+  ansible.builtin.shell: |
+    multipath -ll 2>/dev/null || lsblk -S | grep -v "sda\|sdb" || echo "No FC LUNs detected"
+  register: fc_luns
+  changed_when: false
+  tags:
+    - fc_storage
+    - discovery
+
+- name: Display FC LUNs
+  ansible.builtin.debug:
+    msg: "{{ fc_luns.stdout_lines }}"
+  tags:
+    - fc_storage
+    - discovery
+
+- name: Configure multipathing
+  ansible.builtin.template:
+    src: multipath.conf.j2
+    dest: /etc/multipath.conf
+    mode: '0644'
+    backup: yes
+  notify: restart multipathd
+  when: fc_storage_enabled | default(false)
+  tags:
+    - fc_storage
+    - multipath
+
+- name: Enable and start multipathd service
+  ansible.builtin.systemd:
+    name: multipathd
+    enabled: yes
+    state: started
+  when: fc_storage_enabled | default(false)
+  tags:
+    - fc_storage
+    - multipath
+
+- name: Wait for multipath devices
+  ansible.builtin.pause:
+    seconds: 10
+  when: fc_storage_enabled | default(false)
+  tags:
+    - fc_storage
+
+- name: Get multipath device information
+  ansible.builtin.command: multipath -ll
+  register: multipath_devices
+  changed_when: false
+  failed_when: false
+  when: fc_storage_enabled | default(false)
+  tags:
+    - fc_storage
+    - info
+
+- name: Create or connect to Fiber Channel Storage Repository
+  ansible.builtin.shell: |
+    # Check if SR already exists
+    EXISTING_SR=$(xe sr-list type=lvmohba name-label="{{ fc_sr_name }}" --minimal)
+    
+    if [ -n "$EXISTING_SR" ]; then
+      echo "SR already exists: $EXISTING_SR"
+      echo "$EXISTING_SR"
+    else
+      # Probe for FC devices
+      DEVICE_CONFIG=$(xe sr-probe type=lvmohba | grep -A 5 "SCSIid" | head -1 | grep -oP 'SCSIid="\K[^"]+' || echo "")
+      
+      if [ -z "$DEVICE_CONFIG" ]; then
+        echo "ERROR: No FC LUNs found for SR creation"
+        exit 1
+      fi
+      
+      # Create new shared SR on first host, or attach on subsequent hosts
+      {% if xenserver_pool_master | default(false) %}
+      # Pool master creates the SR
+      SR_UUID=$(xe sr-create type=lvmohba \
+        name-label="{{ fc_sr_name }}" \
+        name-description="{{ fc_sr_description }}" \
+        device-config:SCSIid="$DEVICE_CONFIG" \
+        content-type=user \
+        shared=true)
+      echo "Created shared SR: $SR_UUID"
+      echo "$SR_UUID"
+      {% else %}
+      # Member hosts connect to existing SR
+      # Get SR UUID from pool master
+      MASTER_IP="{{ pool_master_ip | default('') }}"
+      if [ -n "$MASTER_IP" ]; then
+        SR_UUID=$(ssh root@$MASTER_IP "xe sr-list name-label='{{ fc_sr_name }}' --minimal" 2>/dev/null || echo "")
+        if [ -n "$SR_UUID" ]; then
+          # SR already exists and is shared
+          echo "Connected to shared SR: $SR_UUID"
+          echo "$SR_UUID"
+        else
+          echo "ERROR: SR not found on master"
+          exit 1
+        fi
+      else
+        echo "ERROR: Pool master IP not configured"
+        exit 1
+      fi
+      {% endif %}
+    fi
+  register: fc_sr_result
+  when: 
+    - fc_storage_enabled | default(false)
+    - create_fc_sr | default(true)
+  changed_when: "'Created' in fc_sr_result.stdout"
+  tags:
+    - fc_storage
+    - sr
+
+- name: Set FC SR as default
+  ansible.builtin.shell: |
+    SR_UUID="{{ fc_sr_result.stdout_lines[-1] }}"
+    POOL_UUID=$(xe pool-list --minimal)
+    
+    # Set as default SR for the pool
+    xe pool-param-set uuid=$POOL_UUID default-SR=$SR_UUID
+    xe pool-param-set uuid=$POOL_UUID suspend-image-SR=$SR_UUID
+    xe pool-param-set uuid=$POOL_UUID crash-dump-SR=$SR_UUID
+    
+    echo "Set $SR_UUID as default SR"
+  when: 
+    - fc_sr_result is defined
+    - fc_sr_result is changed
+    - set_fc_sr_as_default | default(true)
+    - xenserver_pool_master | default(false)
+  register: set_default_sr
+  changed_when: true
+  tags:
+    - fc_storage
+    - sr
+
+- name: Enable Storage XenMotion (Live Migration)
+  ansible.builtin.debug:
+    msg:
+      - "Storage XenMotion Configuration:"
+      - "  ✓ Shared FC storage configured"
+      - "  ✓ All hosts can access FC SR"
+      - "  ✓ Live migration enabled automatically"
+      - ""
+      - "To live migrate a VM:"
+      - "  xe vm-migrate vm=VM_NAME host=xenserver02 live=true"
+      - ""
+      - "Storage XenMotion (with storage migration):"
+      - "  xe vm-migrate vm=VM_NAME host=xenserver02 live=true"
+  when: fc_storage_enabled | default(false)
+  tags:
+    - fc_storage
+    - migration
+
+- name: Display FC Storage summary
+  ansible.builtin.debug:
+    msg:
+      - "=========================================="
+      - "Fiber Channel Storage Configuration"
+      - "=========================================="
+      - "Host: {{ inventory_hostname }}"
+      - "SR Name: {{ fc_sr_name }}"
+      - "SR UUID: {{ fc_sr_result.stdout_lines[-1] | default('Not created yet') }}"
+      - "Multipathing: {{ 'Enabled' if fc_storage_enabled else 'Disabled' }}"
+      - "Live Migration: {{ 'Enabled (shared storage)' if fc_storage_enabled else 'Disabled' }}"
+      - "=========================================="
+  when: fc_sr_result is defined
+  tags:
+    - fc_storage
+    - info

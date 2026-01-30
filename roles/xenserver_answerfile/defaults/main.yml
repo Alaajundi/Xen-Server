@@ -1,0 +1,12 @@
+---
+# Default variables for xenserver_answerfile role
+
+# Answer file output directory
+answerfile_output_dir: "{{ http_root_dir }}/answerfiles"
+
+# Installation source
+installation_source: "url"
+
+# Disk configuration
+install_disk_selection: "first-detected"
+sr_on_primary: true

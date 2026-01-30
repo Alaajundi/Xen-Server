@@ -1,0 +1,136 @@
+---
+# Tasks for ilo_management role - Manages HP iLO for remote server control
+
+- name: Check iLO connectivity
+  ansible.builtin.wait_for:
+    host: "{{ ilo_ip }}"
+    port: 443
+    timeout: 30
+    state: started
+  delegate_to: localhost
+  tags:
+    - ilo
+    - connectivity
+
+- name: Get current server power state
+  community.general.redfish_info:
+    baseuri: "{{ ilo_ip }}"
+    username: "{{ ilo_username }}"
+    password: "{{ ilo_password }}"
+    category: Systems
+    command: GetSystemInventory
+  delegate_to: localhost
+  register: system_info
+  tags:
+    - ilo
+    - power
+
+- name: Display current power state
+  ansible.builtin.debug:
+    msg: "Server {{ inventory_hostname }} power state: {{ system_info.redfish_facts.system.entries[0].PowerState }}"
+  tags:
+    - ilo
+    - power
+
+- name: Power off server if running (preparation for installation)
+  community.general.redfish_command:
+    baseuri: "{{ ilo_ip }}"
+    username: "{{ ilo_username }}"
+    password: "{{ ilo_password }}"
+    category: Systems
+    command: PowerForceOff
+  delegate_to: localhost
+  when: 
+    - system_info.redfish_facts.system.entries[0].PowerState == "On"
+    - force_power_off | default(false)
+  tags:
+    - ilo
+    - power
+
+- name: Wait for server to power off
+  ansible.builtin.pause:
+    seconds: 30
+  when: force_power_off | default(false)
+  tags:
+    - ilo
+    - power
+
+- name: Eject existing virtual media
+  community.general.redfish_command:
+    baseuri: "{{ ilo_ip }}"
+    username: "{{ ilo_username }}"
+    password: "{{ ilo_password }}"
+    category: Manager
+    command: VirtualMediaEject
+    virtual_media:
+      image_url: ""
+  delegate_to: localhost
+  failed_when: false
+  tags:
+    - ilo
+    - virtual_media
+
+- name: Insert XenServer ISO via virtual media (HTTP)
+  community.general.redfish_command:
+    baseuri: "{{ ilo_ip }}"
+    username: "{{ ilo_username }}"
+    password: "{{ ilo_password }}"
+    category: Manager
+    command: VirtualMediaInsert
+    virtual_media:
+      image_url: "{{ iso_url }}"
+      media_types:
+        - CD
+        - DVD
+  delegate_to: localhost
+  register: virtual_media_result
+  retries: "{{ ilo_retry_count }}"
+  delay: "{{ ilo_retry_delay }}"
+  until: virtual_media_result is succeeded
+  tags:
+    - ilo
+    - virtual_media
+
+- name: Set boot device to virtual CD/DVD for one-time boot
+  community.general.redfish_command:
+    baseuri: "{{ ilo_ip }}"
+    username: "{{ ilo_username }}"
+    password: "{{ ilo_password }}"
+    category: Systems
+    command: SetOneTimeBoot
+    bootdevice: Cd
+  delegate_to: localhost
+  register: boot_config_result
+  retries: "{{ ilo_retry_count }}"
+  delay: "{{ ilo_retry_delay }}"
+  until: boot_config_result is succeeded
+  tags:
+    - ilo
+    - boot
+
+- name: Power on server to begin installation
+  community.general.redfish_command:
+    baseuri: "{{ ilo_ip }}"
+    username: "{{ ilo_username }}"
+    password: "{{ ilo_password }}"
+    category: Systems
+    command: PowerOn
+  delegate_to: localhost
+  register: power_on_result
+  retries: "{{ ilo_retry_count }}"
+  delay: "{{ ilo_retry_delay }}"
+  until: power_on_result is succeeded
+  tags:
+    - ilo
+    - power
+
+- name: Display installation start message
+  ansible.builtin.debug:
+    msg:
+      - "Server {{ inventory_hostname }} powered on successfully"
+      - "Booting from virtual media: {{ iso_url }}"
+      - "Installation will begin automatically using answer file"
+      - "Monitor progress via iLO console: https://{{ ilo_ip }}"
+  tags:
+    - ilo
+    - info

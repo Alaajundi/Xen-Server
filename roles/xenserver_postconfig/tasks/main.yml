@@ -1,0 +1,318 @@
+---
+# Tasks for xenserver_postconfig role - Advanced post-installation configuration
+
+- name: Get host UUID
+  ansible.builtin.command: xe host-list --minimal
+  register: host_uuid_cmd
+  changed_when: false
+  tags:
+    - postconfig
+
+- name: Set host UUID fact
+  ansible.builtin.set_fact:
+    xenserver_host_uuid: "{{ host_uuid_cmd.stdout }}"
+  tags:
+    - postconfig
+
+- name: Configure network bonds for management interfaces
+  block:
+    - name: Get management interface PIFs
+      ansible.builtin.shell: |
+        xe pif-list device={{ item.name }} --minimal
+      loop: "{{ network_interfaces | selectattr('purpose', 'equalto', 'management') | list }}"
+      register: mgmt_pifs
+      changed_when: false
+      tags:
+        - postconfig
+        - network
+
+    - name: Create management bond (bond0)
+      ansible.builtin.shell: |
+        # Check if bond already exists
+        EXISTING_BOND=$(xe bond-list | grep -c "bond0" || true)
+        
+        if [ "$EXISTING_BOND" -eq "0" ]; then
+          # Get the network UUID for management
+          NETWORK_UUID=$(xe pif-list device=eth0 --minimal | xargs -I {} xe pif-param-get uuid={} param-name=network-uuid)
+          
+          # Create bond with both management interfaces
+          PIF1=$(xe pif-list device=eth0 --minimal)
+          PIF2=$(xe pif-list device=eth1 --minimal)
+          
+          if [ -n "$PIF1" ] && [ -n "$PIF2" ]; then
+            xe bond-create network-uuid=$NETWORK_UUID pif-uuids=$PIF1,$PIF2 mode=active-backup
+            echo "Management bond created"
+          else
+            echo "PIFs not found for bonding"
+          fi
+        else
+          echo "Bond already exists"
+        fi
+      register: mgmt_bond_result
+      changed_when: "'Management bond created' in mgmt_bond_result.stdout"
+      tags:
+        - postconfig
+        - network
+        - bonds
+
+- name: Configure data network bonds
+  block:
+    - name: Get data network UUID
+      ansible.builtin.shell: |
+        xe network-list name-label="{{ data_network_name }}" --minimal
+      register: data_network_uuid
+      changed_when: false
+      tags:
+        - postconfig
+        - network
+
+    - name: Create data network if not exists
+      ansible.builtin.command: |
+        xe network-create name-label="{{ data_network_name }}" name-description="VM Data Network"
+      when: data_network_uuid.stdout == ""
+      register: new_data_network
+      tags:
+        - postconfig
+        - network
+
+    - name: Set data network UUID
+      ansible.builtin.set_fact:
+        data_net_uuid: "{{ data_network_uuid.stdout if data_network_uuid.stdout != '' else new_data_network.stdout }}"
+      tags:
+        - postconfig
+        - network
+
+    - name: Create VLANs for data interfaces
+      ansible.builtin.shell: |
+        # Get PIFs for data interfaces
+        PIF_ETH2=$(xe pif-list device=eth2 --minimal)
+        PIF_ETH3=$(xe pif-list device=eth3 --minimal)
+        
+        # Create VLAN PIFs
+        {% if data_vlan is defined and data_vlan %}
+        if [ -n "$PIF_ETH2" ]; then
+          VLAN_PIF2=$(xe vlan-create pif-uuid=$PIF_ETH2 vlan={{ data_vlan }} network-uuid={{ data_net_uuid }} 2>&1 || echo "")
+          echo "VLAN created on eth2: $VLAN_PIF2"
+        fi
+        
+        if [ -n "$PIF_ETH3" ]; then
+          VLAN_PIF3=$(xe vlan-create pif-uuid=$PIF_ETH3 vlan={{ data_vlan }} network-uuid={{ data_net_uuid }} 2>&1 || echo "")
+          echo "VLAN created on eth3: $VLAN_PIF3"
+        fi
+        {% else %}
+        echo "No VLAN configuration needed"
+        {% endif %}
+      register: vlan_result
+      changed_when: "'VLAN created' in vlan_result.stdout"
+      tags:
+        - postconfig
+        - network
+        - vlan
+
+    - name: Create data bond (bond1) with LACP
+      ansible.builtin.shell: |
+        # Check if data bond exists
+        EXISTING_BOND=$(xe bond-list | grep -c "bond1" || true)
+        
+        if [ "$EXISTING_BOND" -eq "0" ]; then
+          {% if data_vlan is defined and data_vlan %}
+          # Get VLAN PIFs
+          VLAN_PIF2=$(xe vlan-list tag={{ data_vlan }} | grep "^uuid" | awk '{print $NF}' | head -1)
+          VLAN_PIF3=$(xe vlan-list tag={{ data_vlan }} | grep "^uuid" | awk '{print $NF}' | tail -1)
+          {% else %}
+          # Get physical PIFs
+          VLAN_PIF2=$(xe pif-list device=eth2 --minimal)
+          VLAN_PIF3=$(xe pif-list device=eth3 --minimal)
+          {% endif %}
+          
+          if [ -n "$VLAN_PIF2" ] && [ -n "$VLAN_PIF3" ]; then
+            xe bond-create network-uuid={{ data_net_uuid }} pif-uuids=$VLAN_PIF2,$VLAN_PIF3 mode=lacp
+            echo "Data bond created with LACP"
+          else
+            echo "VLANs PIFs not found for bonding"
+          fi
+        else
+          echo "Data bond already exists"
+        fi
+      register: data_bond_result
+      changed_when: "'Data bond created' in data_bond_result.stdout"
+      tags:
+        - postconfig
+        - network
+        - bonds
+
+- name: Configure NTP servers
+  ansible.builtin.shell: |
+    xe host-param-set uuid={{ xenserver_host_uuid }} ntp-servers={{ xenserver_ntp_servers | join(',') }}
+  when: configure_ntp | bool
+  tags:
+    - postconfig
+    - ntp
+
+- name: Set host name-label
+  ansible.builtin.command: |
+    xe host-param-set uuid={{ xenserver_host_uuid }} name-label="{{ xenserver_hostname }}"
+  tags:
+    - postconfig
+    - hostname
+
+- name: Get storage repository information
+  ansible.builtin.command: xe sr-list type=lvm --minimal
+  register: sr_list
+  changed_when: false
+  tags:
+    - postconfig
+    - storage
+
+- name: Display storage repository info
+  ansible.builtin.debug:
+    msg:
+      - "Local SR UUID: {{ sr_list.stdout }}"
+      - "Storage configured with RAID 1 using all disk space"
+  tags:
+    - postconfig
+    - storage
+
+- name: Enable automatic start on host boot for key VMs (placeholder)
+  ansible.builtin.debug:
+    msg: "VM auto-start can be configured here once VMs are deployed"
+  tags:
+    - postconfig
+    - vms
+
+- name: XenServer Pool Configuration
+  block:
+    - name: Create pool on master server
+      ansible.builtin.shell: |
+        # Check if already in a pool
+        CURRENT_POOL=$(xe pool-list params=name-label --minimal)
+        
+        if [ -n "$CURRENT_POOL" ] && [ "$CURRENT_POOL" != "{{ pool_name }}" ]; then
+          log "Renaming pool to {{ pool_name }}"
+          POOL_UUID=$(xe pool-list --minimal)
+          xe pool-param-set uuid=$POOL_UUID name-label="{{ pool_name }}" name-description="{{ pool_description }}"
+          echo "Pool renamed to {{ pool_name }}"
+        elif [ -z "$CURRENT_POOL" ]; then
+          # Create new pool
+          POOL_UUID=$(xe pool-list --minimal)
+          xe pool-param-set uuid=$POOL_UUID name-label="{{ pool_name }}" name-description="{{ pool_description }}"
+          echo "Pool {{ pool_name }} created"
+        else
+          echo "Pool {{ pool_name }} already configured"
+        fi
+      register: pool_create_result
+      changed_when: "'created' in pool_create_result.stdout or 'renamed' in pool_create_result.stdout"
+      when: 
+        - create_pool | bool
+        - xenserver_pool_master | default(false) | bool
+      tags:
+        - postconfig
+        - pool
+
+    - name: Get pool UUID from master
+      ansible.builtin.command: xe pool-list --minimal
+      register: pool_uuid_result
+      changed_when: false
+      when: xenserver_pool_master | default(false) | bool
+      tags:
+        - postconfig
+        - pool
+
+    - name: Display pool master information
+      ansible.builtin.debug:
+        msg:
+          - "Pool Master Configuration:"
+          - "  Pool Name: {{ pool_name }}"
+          - "  Pool UUID: {{ pool_uuid_result.stdout | default('N/A') }}"
+          - "  Master IP: {{ management_ip }}"
+          - "  Other servers will join this pool"
+      when: xenserver_pool_master | default(false) | bool
+      tags:
+        - postconfig
+        - pool
+
+    - name: Join server to pool (member servers)
+      ansible.builtin.shell: |
+        # Check if already in a pool
+        POOL_MASTER=$(xe pool-list params=master --minimal | xargs -I {} xe host-list uuid={} params=address --minimal)
+        
+        if [ "$POOL_MASTER" == "{{ management_ip }}" ]; then
+          echo "Already joined - this is master"
+          exit 0
+        elif [ "$POOL_MASTER" == "{{ pool_master_ip }}" ]; then
+          echo "Already joined to correct pool"
+          exit 0
+        else
+          # Join the pool
+          echo "Joining pool at {{ pool_master_ip }}"
+          xe pool-join master-address={{ pool_master_ip }} \
+            master-username=root \
+            master-password={{ xenserver_root_password }}
+          echo "Successfully joined pool"
+        fi
+      register: pool_join_result
+      changed_when: "'Successfully joined' in pool_join_result.stdout"
+      when: 
+        - create_pool | bool
+        - not (xenserver_pool_master | default(false) | bool)
+        - pool_master_ip is defined
+      tags:
+        - postconfig
+        - pool
+      no_log: true  # Hide password from logs
+
+    - name: Display pool member information
+      ansible.builtin.debug:
+        msg:
+          - "Pool Member Configuration:"
+          - "  Joined Pool Master: {{ pool_master_ip }}"
+          - "  Member IP: {{ management_ip }}"
+          - "  Status: {{ pool_join_result.stdout | default('Already member') }}"
+      when: 
+        - not (xenserver_pool_master | default(false) | bool)
+        - pool_master_ip is defined
+      tags:
+        - postconfig
+        - pool
+
+  when: create_pool | default(true) | bool
+  tags:
+    - postconfig
+    - pool
+
+- name: Verify XenServer configuration
+  ansible.builtin.shell: |
+    echo "=== Host Information ==="
+    xe host-param-list uuid={{ xenserver_host_uuid }} | grep -E "(name-label|address|hostname)"
+    
+    echo ""
+    echo "=== Network Configuration ==="
+    xe network-list
+    
+    echo ""
+    echo "=== Bond Configuration ==="
+    xe bond-list
+    
+    echo ""
+    echo "=== Storage Configuration ==="
+    xe sr-list
+  register: config_summary
+  changed_when: false
+  tags:
+    - postconfig
+    - verify
+
+- name: Display configuration summary
+  ansible.builtin.debug:
+    var: config_summary.stdout_lines
+  tags:
+    - postconfig
+    - verify
+
+- name: Create configuration marker file
+  ansible.builtin.file:
+    path: /root/ansible_postconfig_complete
+    state: touch
+    mode: '0644'
+  tags:
+    - postconfig

@@ -1,0 +1,16 @@
+---
+# Default variables for xenserver_postconfig role
+
+# Network bond configuration
+bond_mode_map:
+  active-backup: "active-backup"
+  "802.3ad": "lacp"
+  balance-slb: "balance-slb"
+
+# Storage repository settings
+create_default_sr: true
+sr_name_prefix: "Local-Storage"
+
+# Additional configuration
+configure_ntp: true
+configure_syslog: false

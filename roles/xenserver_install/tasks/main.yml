@@ -1,0 +1,153 @@
+---
+# Tasks for xenserver_install role - Monitors and validates the installation process
+
+- name: Display installation start message
+  ansible.builtin.debug:
+    msg:
+      - "=========================================="
+      - "Starting XenServer installation for {{ inventory_hostname }}"
+      - "Management IP: {{ management_ip }}"
+      - "Hostname: {{ xenserver_hostname }}"
+      - "iLO: {{ ilo_ip }}"
+      - "Answer file: {{ answer_file_full_url }}"
+      - "=========================================="
+  tags:
+    - install
+    - info
+
+- name: Record installation start time
+  ansible.builtin.set_fact:
+    installation_start_time: "{{ ansible_date_time.epoch }}"
+  tags:
+    - install
+
+- name: Wait for server to begin installation (boot from ISO)
+  ansible.builtin.pause:
+    seconds: 120
+    prompt: "Waiting for server to boot from ISO and start installation..."
+  tags:
+    - install
+    - wait
+
+- name: Monitor installation progress via SSH connectivity
+  ansible.builtin.wait_for:
+    host: "{{ management_ip }}"
+    port: "{{ ssh_port }}"
+    timeout: "{{ max_installation_time }}"
+    delay: 300  # Wait 5 minutes before first check
+    sleep: "{{ check_interval }}"
+    state: started
+  delegate_to: localhost
+  register: ssh_available
+  tags:
+    - install
+    - monitor
+
+- name: Wait for XenServer system to fully initialize
+  ansible.builtin.pause:
+    seconds: 60
+    prompt: "SSH is available. Waiting for XenServer services to fully start..."
+  when: ssh_available is succeeded
+  tags:
+    - install
+    - wait
+
+- name: Verify SSH connectivity with retry
+  ansible.builtin.wait_for_connection:
+    timeout: 300
+    delay: 10
+  retries: 3
+  delay: 30
+  register: ssh_connection
+  tags:
+    - install
+    - verify
+
+- name: Gather facts from newly installed XenServer
+  ansible.builtin.setup:
+  when: ssh_connection is succeeded
+  tags:
+    - install
+    - facts
+
+- name: Check if XenServer is properly installed
+  ansible.builtin.command: xe host-list
+  register: xe_check
+  changed_when: false
+  failed_when: false
+  tags:
+    - install
+    - verify
+
+- name: Verify post-installation script completion
+  ansible.builtin.stat:
+    path: /root/ansible_post_install_complete
+  register: post_install_marker
+  tags:
+    - install
+    - verify
+
+- name: Display installation status
+  ansible.builtin.debug:
+    msg: >
+      {% if xe_check.rc == 0 and post_install_marker.stat.exists %}
+      SUCCESS: XenServer installed successfully on {{ inventory_hostname }}
+      {% elif xe_check.rc == 0 %}
+      PARTIAL: XenServer installed but post-install script may not have completed
+      {% else %}
+      FAILED: XenServer installation verification failed
+      {% endif %}
+  tags:
+    - install
+    - verify
+
+- name: Get XenServer version
+  ansible.builtin.shell: cat /etc/xensource-inventory | grep PRODUCT_VERSION
+  register: xs_version
+  changed_when: false
+  when: xe_check.rc == 0
+  tags:
+    - install
+    - info
+
+- name: Get host UUID
+  ansible.builtin.command: xe host-list --minimal
+  register: host_uuid
+  changed_when: false
+  when: xe_check.rc == 0
+  tags:
+    - install
+    - info
+
+- name: Calculate installation duration
+  ansible.builtin.set_fact:
+    installation_duration: "{{ (ansible_date_time.epoch | int) - (installation_start_time | int) }}"
+  tags:
+    - install
+    - info
+
+- name: Display installation summary
+  ansible.builtin.debug:
+    msg:
+      - "=========================================="
+      - "XenServer Installation Complete"
+      - "=========================================="
+      - "Host: {{ inventory_hostname }}"
+      - "IP: {{ management_ip }}"
+      - "Hostname: {{ xenserver_hostname }}"
+      - "Version: {{ xs_version.stdout | default('Unknown') }}"
+      - "Host UUID: {{ host_uuid.stdout | default('Unknown') }}"
+      - "Installation Duration: {{ installation_duration }} seconds ({{ (installation_duration | int / 60) | round(1) }} minutes)"
+      - "=========================================="
+  when: xe_check.rc == 0
+  tags:
+    - install
+    - info
+
+- name: Fail if installation was not successful
+  ansible.builtin.fail:
+    msg: "XenServer installation failed for {{ inventory_hostname }}. Please check iLO console logs."
+  when: xe_check.rc != 0
+  tags:
+    - install
+    - verify

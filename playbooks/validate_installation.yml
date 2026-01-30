@@ -1,0 +1,188 @@
+---
+# Playbook: Validate XenServer Installation
+# Purpose: Verify that XenServer is properly installed and configured
+
+- name: Validate XenServer Installation and Configuration
+  hosts: xenservers
+  gather_facts: true
+  
+  tasks:
+    - name: Check XenServer service status
+      ansible.builtin.systemd:
+        name: xapi
+      register: xapi_status
+      tags:
+        - validation
+        - services
+
+    - name: Verify xe command is available
+      ansible.builtin.command: which xe
+      register: xe_available
+      changed_when: false
+      failed_when: xe_available.rc != 0
+      tags:
+        - validation
+
+    - name: Get host information
+      ansible.builtin.command: xe host-list params=all
+      register: host_info
+      changed_when: false
+      tags:
+        - validation
+        - info
+
+    - name: Get network configuration
+      ansible.builtin.command: xe network-list
+      register: network_config
+      changed_when: false
+      tags:
+        - validation
+        - network
+
+    - name: Get bond configuration
+      ansible.builtin.command: xe bond-list
+      register: bond_config
+      changed_when: false
+      tags:
+        - validation
+        - network
+
+    - name: Get PIF list
+      ansible.builtin.command: xe pif-list
+      register: pif_list
+      changed_when: false
+      tags:
+        - validation
+        - network
+
+    - name: Get storage repository list
+      ansible.builtin.command: xe sr-list
+      register: sr_list
+      changed_when: false
+      tags:
+        - validation
+        - storage
+
+    - name: Check RAID status
+      ansible.builtin.shell: |
+        cat /proc/mdstat 2>/dev/null || echo "Software RAID not in use"
+      register: raid_status
+      changed_when: false
+      failed_when: false
+      tags:
+        - validation
+        - storage
+
+    - name: Get disk information
+      ansible.builtin.command: lsblk
+      register: disk_info
+      changed_when: false
+      tags:
+        - validation
+        - storage
+
+    - name: Check NTP configuration
+      ansible.builtin.shell: |
+        xe host-param-get uuid=$(xe host-list --minimal) param-name=ntp-servers
+      register: ntp_config
+      changed_when: false
+      tags:
+        - validation
+        - ntp
+
+    - name: Verify hostname configuration
+      ansible.builtin.shell: |
+        HOSTNAME=$(hostname)
+        XE_HOSTNAME=$(xe host-param-get uuid=$(xe host-list --minimal) param-name=hostname)
+        echo "System hostname: $HOSTNAME"
+        echo "XenServer hostname: $XE_HOSTNAME"
+      register: hostname_check
+      changed_when: false
+      tags:
+        - validation
+        - hostname
+
+    - name: Display validation results
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "Validation Results for {{ inventory_hostname }}"
+          - "=========================================="
+          - ""
+          - "XAPI Service Status: {{ xapi_status.status.ActiveState }}"
+          - "Hostname: {{ hostname_check.stdout_lines }}"
+          - "NTP Servers: {{ ntp_config.stdout }}"
+          - ""
+          - "--- Network Configuration ---"
+          - "{{ network_config.stdout }}"
+          - ""
+          - "--- Bond Configuration ---"
+          - "{{ bond_config.stdout }}"
+          - ""
+          - "--- Storage Configuration ---"
+          - "{{ sr_list.stdout }}"
+          - ""
+          - "--- RAID Status ---"
+          - "{{ raid_status.stdout }}"
+          - ""
+          - "=========================================="
+      tags:
+        - validation
+        - report
+
+    - name: Create validation report file
+      ansible.builtin.copy:
+        content: |
+          XenServer Installation Validation Report
+          =========================================
+          Server: {{ inventory_hostname }}
+          Validated: {{ ansible_date_time.iso8601 }}
+          
+          Service Status:
+          ---------------
+          XAPI: {{ xapi_status.status.ActiveState }}
+          
+          Hostname:
+          ---------
+          {{ hostname_check.stdout }}
+          
+          NTP Configuration:
+          ------------------
+          {{ ntp_config.stdout }}
+          
+          Network Configuration:
+          ----------------------
+          {{ network_config.stdout }}
+          
+          Bond Configuration:
+          -------------------
+          {{ bond_config.stdout }}
+          
+          PIF List:
+          ---------
+          {{ pif_list.stdout }}
+          
+          Storage Configuration:
+          ----------------------
+          {{ sr_list.stdout }}
+          
+          RAID Status:
+          ------------
+          {{ raid_status.stdout }}
+          
+          Disk Information:
+          -----------------
+          {{ disk_info.stdout }}
+          
+        dest: "/root/xenserver_validation_{{ ansible_date_time.date }}.txt"
+        mode: '0644'
+      tags:
+        - validation
+        - report
+
+    - name: Display report location
+      ansible.builtin.debug:
+        msg: "Validation report saved to: /root/xenserver_validation_{{ ansible_date_time.date }}.txt"
+      tags:
+        - validation
+        - report

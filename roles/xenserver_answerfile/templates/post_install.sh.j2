@@ -1,0 +1,119 @@
+#!/bin/bash
+# Post-installation script for {{ inventory_hostname }}
+# This script runs after XenServer installation completes
+
+set -e
+
+LOG_FILE="/var/log/xenserver_post_install.log"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+log "Starting post-installation configuration for {{ inventory_hostname }}"
+
+# Wait for XenServer services to be fully ready
+log "Waiting for XenServer services to start..."
+sleep 30
+
+# Configure additional network interfaces
+log "Configuring network interfaces..."
+
+# Get the management interface UUID
+MGMT_IF=$(xe pif-list device=eth0 --minimal)
+log "Management interface: $MGMT_IF"
+
+{% for interface in network_interfaces %}
+{% if interface.purpose == "data" %}
+# Configure {{ interface.name }} for data network
+DATA_IF_{{ loop.index }}=$(xe pif-list device={{ interface.name }} --minimal)
+if [ -n "$DATA_IF_{{ loop.index }}" ]; then
+    log "Found {{ interface.name }}: $DATA_IF_{{ loop.index }}"
+    
+    # Bring up the interface
+    xe pif-reconfigure-ip uuid=$DATA_IF_{{ loop.index }} mode=none
+    xe pif-plug uuid=$DATA_IF_{{ loop.index }}
+    
+    log "{{ interface.name }} configured successfully"
+fi
+{% endif %}
+{% endfor %}
+
+# Create data network for VMs
+log "Creating VM network..."
+NETWORK_UUID=$(xe network-create name-label="{{ data_network_name }}" name-description="VM Data Network" 2>&1 || echo "")
+
+if [ -n "$NETWORK_UUID" ]; then
+    log "Created network {{ data_network_name }}: $NETWORK_UUID"
+    
+    # Add VLAN configuration if specified
+    {% if data_vlan is defined and data_vlan %}
+    log "Configuring VLAN {{ data_vlan }}..."
+    {% endif %}
+else
+    log "Network creation may have failed or already exists"
+fi
+
+# Set hostname in XenServer
+log "Setting hostname..."
+xe host-list --minimal | head -1 | xargs -I {} xe host-param-set uuid={} name-label="{{ xenserver_hostname }}"
+
+# Enable NTP
+log "Configuring NTP..."
+{% for ntp_server in xenserver_ntp_servers %}
+xe host-param-set uuid=$(xe host-list --minimal | head -1) ntp-servers:={{ ntp_server }}
+{% endfor %}
+
+# Set timezone
+log "Setting timezone..."
+ln -sf /usr/share/zoneinfo/{{ xenserver_timezone }} /etc/localtime
+
+# Configure SSH for better security
+log "Configuring SSH..."
+
+# Ensure .ssh directory exists
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+
+{% if ssh_key_deployment and ssh_public_key %}
+# Deploy SSH public key for passwordless authentication
+log "Deploying SSH public key..."
+cat > /root/.ssh/authorized_keys << 'EOF'
+{{ ssh_public_key }}
+EOF
+chmod 600 /root/.ssh/authorized_keys
+log "SSH public key deployed successfully"
+
+{% if ssh_disable_password_auth %}
+# Disable password authentication (key-only)
+log "Disabling password authentication..."
+sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+sed -i 's/PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+{% endif %}
+{% else %}
+log "SSH key deployment skipped (not configured)"
+{% endif %}
+
+# Enable root login
+sed -i 's/#PermitRootLogin yes/PermitRootLogin yes/' /etc/ssh/sshd_config
+sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+
+# Restart SSH service
+systemctl restart sshd
+log "SSH configured successfully"
+
+# Enable firewall rules for management
+log "Configuring firewall..."
+# Add any custom firewall rules here
+
+# Create a signal file to indicate completion
+touch /root/ansible_post_install_complete
+log "Post-installation script completed successfully"
+
+# Display summary
+log "=== Installation Summary ==="
+log "Hostname: {{ xenserver_hostname }}"
+log "Management IP: {{ management_ip }}"
+log "Server ready for Ansible connection"
+
+exit 0

@@ -1,0 +1,49 @@
+---
+# Playbook: Setup HTTP Server
+# Purpose: Configure HTTP server to serve XenServer ISO and answer files
+# Run this first before starting installations
+
+- name: Setup HTTP Server for XenServer Installation Files
+  hosts: http_server
+  gather_facts: true
+  
+  tasks:
+    - name: Display HTTP server setup information
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "Setting up HTTP Server for XenServer Installation"
+          - "=========================================="
+          - "This will:"
+          - "  - Create directory structure"
+          - "  - Start Python HTTP server"
+          - "  - Serve ISO and answer files"
+          - ""
+          - "IMPORTANT: Copy XenServer ISO to:"
+          - "  {{ http_root_dir }}/{{ iso_filename }}"
+          - "=========================================="
+      tags:
+        - info
+
+    - name: Include http_server role
+      ansible.builtin.include_role:
+        name: http_server
+      tags:
+        - setup
+
+    - name: Final instructions
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "HTTP Server Setup Complete"
+          - "=========================================="
+          - "Next steps:"
+          - "1. Copy XenServer ISO to: {{ http_root_dir }}/{{ iso_filename }}"
+          - "2. Verify ISO accessibility at: {{ iso_url }}"
+          - "3. Run: ansible-playbook playbooks/install_xenserver.yml"
+          - ""
+          - "To stop the server:"
+          - "  kill $(cat {{ http_root_dir }}/http_server.pid)"
+          - "=========================================="
+      tags:
+        - info

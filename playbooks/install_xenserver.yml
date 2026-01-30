@@ -1,0 +1,140 @@
+---
+# Playbook: Install XenServer on HP DL385 G11 Servers
+# Purpose: Automated unattended installation of XenServer via iLO and HTTP
+# Prerequisites: HTTP server must be running with ISO file in place
+
+- name: XenServer Unattended Installation - Full Workflow
+  hosts: xenservers
+  gather_facts: false
+  serial: 1  # Install one server at a time for easier monitoring
+  
+  vars:
+    force_power_off: false  # Set to true to force power off before installation
+  
+  tasks:
+    - name: Pre-installation validation
+      block:
+        - name: Display installation plan
+          ansible.builtin.debug:
+            msg:
+              - "=========================================="
+              - "XenServer Installation Plan"
+              - "=========================================="
+              - "Target Server: {{ inventory_hostname }}"
+              - "Management IP: {{ management_ip }}"
+              - "Hostname: {{ xenserver_hostname }}"
+              - "iLO Address: {{ ilo_ip }}"
+              - "RAID Configuration: {{ raid_config.type }} ({{ raid_config.disks | join(', ') }})"
+              - "Network: 4 NICs - 2 Management (bond0), 2 Data (bond1)"
+              - "ISO Source: {{ iso_url }}"
+              - "=========================================="
+          delegate_to: localhost
+          tags:
+            - always
+
+        - name: Verify HTTP server is accessible
+          ansible.builtin.uri:
+            url: "{{ iso_url }}"
+            method: HEAD
+            status_code: 200
+          delegate_to: localhost
+          register: http_check
+          failed_when: false
+          tags:
+            - validation
+
+        - name: Fail if ISO is not accessible
+          ansible.builtin.fail:
+            msg: |
+              ERROR: XenServer ISO is not accessible at {{ iso_url }}
+              Please ensure:
+              1. HTTP server is running (ansible-playbook playbooks/setup_http_server.yml)
+              2. ISO file exists at {{ http_root_dir }}/{{ iso_filename }}
+          when: http_check.status != 200
+          tags:
+            - validation
+
+    - name: Generate answer files
+      ansible.builtin.include_role:
+        name: xenserver_answerfile
+      tags:
+        - answerfile
+        - prepare
+
+    - name: Configure iLO and boot from ISO
+      ansible.builtin.include_role:
+        name: ilo_management
+      tags:
+        - ilo
+        - boot
+
+    - name: Monitor installation progress
+      ansible.builtin.include_role:
+        name: xenserver_install
+      tags:
+        - install
+        - monitor
+
+    - name: Post-installation configuration
+      ansible.builtin.include_role:
+        name: xenserver_postconfig
+      tags:
+        - postconfig
+        - network
+
+    - name: Configure Fiber Channel storage
+      ansible.builtin.include_role:
+        name: fc_storage
+      when: fc_storage_enabled | default(false)
+      tags:
+        - postconfig
+        - fc_storage
+        - storage
+
+    - name: Installation complete notification
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "✓ XenServer Installation Successful"
+          - "=========================================="
+          - "Server: {{ inventory_hostname }}"
+          - "Management IP: {{ management_ip }}"
+          - "Hostname: {{ xenserver_hostname }}"
+          - ""
+          - "You can now:"
+          - "  - Access XenCenter at: {{ management_ip }}"
+          - "  - SSH to server: ssh root@{{ management_ip }}"
+          - "  - Manage via xe CLI commands"
+          - ""
+          - "Network Configuration:"
+          - "  - Management Bond (bond0): eth0 + eth1"
+          - "  - Data Bond (bond1): eth2 + eth3"
+          - "  - Data Network: {{ data_network_name }} (VLAN {{ data_vlan }})"
+          - "=========================================="
+      tags:
+        - always
+
+- name: Post-installation summary
+  hosts: xenservers
+  gather_facts: false
+  
+  tasks:
+    - name: Display overall summary
+      ansible.builtin.debug:
+        msg:
+          - ""
+          - "=========================================="
+          - "All XenServer Installations Complete"
+          - "=========================================="
+          - "Total servers installed: {{ ansible_play_hosts | length }}"
+          - ""
+          - "Installed servers:"
+      run_once: true
+      tags:
+        - summary
+
+    - name: List all installed servers
+      ansible.builtin.debug:
+        msg: "  - {{ xenserver_hostname }} ({{ management_ip }})"
+      tags:
+        - summary

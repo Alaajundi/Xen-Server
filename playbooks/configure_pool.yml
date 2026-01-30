@@ -1,0 +1,107 @@
+---
+# Playbook: Configure XenServer Pool
+# Purpose: Create pool or join servers to existing pool
+# Run this after initial installation if pool configuration was skipped
+
+- name: Configure XenServer Pool
+  hosts: xenservers
+  gather_facts: false
+  serial: 1  # Process one server at a time
+  
+  tasks:
+    - name: Display pool configuration plan
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "XenServer Pool Configuration"
+          - "=========================================="
+          - "Server: {{ inventory_hostname }}"
+          - "Role: {{ 'Pool Master' if xenserver_pool_master else 'Pool Member' }}"
+          - "IP: {{ management_ip }}"
+          - "{% if not xenserver_pool_master %}Master IP: {{ pool_master_ip }}{% endif %}"
+          - "=========================================="
+      tags:
+        - always
+
+    - name: Configure pool master
+      block:
+        - name: Get current pool information
+          ansible.builtin.command: xe pool-list params=all
+          register: pool_info
+          changed_when: false
+
+        - name: Set pool name and description
+          ansible.builtin.shell: |
+            POOL_UUID=$(xe pool-list --minimal)
+            xe pool-param-set uuid=$POOL_UUID name-label="{{ pool_name }}" name-description="{{ pool_description }}"
+          register: pool_config
+          changed_when: true
+
+        - name: Display pool master setup
+          ansible.builtin.debug:
+            msg:
+              - "✓ Pool Master Configured"
+              - "  Pool Name: {{ pool_name }}"
+              - "  Master: {{ xenserver_hostname }} ({{ management_ip }})"
+      when: xenserver_pool_master | default(false)
+      tags:
+        - pool
+        - master
+
+    - name: Join pool as member
+      block:
+        - name: Check current pool status
+          ansible.builtin.shell: |
+            xe pool-list params=master --minimal | xargs -I {} xe host-list uuid={} params=address --minimal
+          register: current_master
+          changed_when: false
+          failed_when: false
+
+        - name: Join the pool
+          ansible.builtin.command: |
+            xe pool-join master-address={{ pool_master_ip }} 
+              master-username=root 
+              master-password={{ xenserver_root_password }}
+          when: current_master.stdout != pool_master_ip
+          no_log: true
+          register: join_result
+
+        - name: Display pool join status
+          ansible.builtin.debug:
+            msg:
+              - "✓ Joined Pool Successfully"
+              - "  Pool Master: {{ pool_master_ip }}"
+              - "  Member: {{ xenserver_hostname }} ({{ management_ip }})"
+          when: join_result is changed
+
+        - name: Already in pool message
+          ansible.builtin.debug:
+            msg: "Server already joined to pool master {{ pool_master_ip }}"
+          when: join_result is skipped
+      when: not (xenserver_pool_master | default(false))
+      tags:
+        - pool
+        - member
+
+- name: Verify Pool Configuration
+  hosts: xenservers
+  gather_facts: false
+  run_once: true
+  
+  tasks:
+    - name: Get pool information from master
+      ansible.builtin.shell: |
+        echo "=== Pool Information ==="
+        xe pool-list params=all
+        
+        echo ""
+        echo "=== Pool Members ==="
+        xe host-list params=name-label,address,enabled
+      register: pool_status
+      delegate_to: "{{ groups['xenservers'] | map('extract', hostvars) | selectattr('xenserver_pool_master', 'equalto', true) | map(attribute='inventory_hostname') | first }}"
+
+    - name: Display pool status
+      ansible.builtin.debug:
+        var: pool_status.stdout_lines
+      tags:
+        - verify

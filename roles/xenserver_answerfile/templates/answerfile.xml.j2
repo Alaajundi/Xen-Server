@@ -1,0 +1,68 @@
+<?xml version="1.0"?>
+<installation mode="fresh" srtype="lvm">
+    <!-- Installation source -->
+    <source type="url">{{ iso_url }}</source>
+    
+    <!-- Accept EULA -->
+    <accept-eula/>
+    
+    <!-- Post installation script URL -->
+    <script stage="installation-complete" type="url">
+        {{ answer_file_url }}/post_install_{{ inventory_hostname }}.sh
+    </script>
+    
+    <!-- Primary disk configuration - RAID 1 using all space -->
+    <primary-disk preserve-first-partition="false">
+        {% if raid_config.type == "raid1" %}
+        <!-- RAID 1 Configuration -->
+        <raid device="md0">
+            {% for disk in raid_config.disks %}
+            <disk>{{ disk }}</disk>
+            {% endfor %}
+        </raid>
+        {% else %}
+        <!-- Single disk -->
+        <device>{{ primary_disk }}</device>
+        {% endif %}
+        
+        <!-- Use all available disk space -->
+        <guest-disk-size>all</guest-disk-size>
+    </primary-disk>
+    
+    <!-- Management interface configuration -->
+    <admin-interface name="eth0" proto="static">
+        <ip>{{ management_ip }}</ip>
+        <subnet-mask>{{ management_netmask }}</subnet-mask>
+        <gateway>{{ management_gateway }}</gateway>
+    </admin-interface>
+    
+    <!-- DNS Configuration -->
+    <name-server>{{ management_dns[0] }}</name-server>
+    {% if management_dns | length > 1 %}
+    <name-server>{{ management_dns[1] }}</name-server>
+    {% endif %}
+    
+    <!-- Hostname -->
+    <hostname>{{ xenserver_hostname }}</hostname>
+    
+    <!-- Root password -->
+    <root-password>{{ xenserver_root_password }}</root-password>
+    
+    <!-- Timezone -->
+    <timezone>{{ xenserver_timezone }}</timezone>
+    
+    <!-- Keyboard layout -->
+    <keymap>{{ xenserver_keyboard }}</keymap>
+    
+    <!-- NTP Servers -->
+    {% for ntp_server in xenserver_ntp_servers %}
+    <ntp-server>{{ ntp_server }}</ntp-server>
+    {% endfor %}
+    
+    <!-- Disable first boot prompts -->
+    <skip-first-boot-prompts/>
+    
+    <!-- Network backend (bridge or openvswitch) -->
+    <network-backend>openvswitch</network-backend>
+    
+</installation>

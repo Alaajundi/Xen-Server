@@ -1,0 +1,20 @@
+---
+# Default variables for ilo_management role
+
+# iLO connection timeout
+ilo_timeout: 60
+
+# Boot configuration
+boot_device: CDROM
+boot_once: true
+
+# Power operations
+power_state: "on"
+
+# Virtual media settings
+virtual_media_type: CDROM
+virtual_media_eject_first: true
+
+# Retry settings
+ilo_retry_count: 3
+ilo_retry_delay: 10

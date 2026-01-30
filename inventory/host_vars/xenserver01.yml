@@ -1,0 +1,68 @@
+---
+# Host-specific variables for xenserver01
+
+# iLO Configuration
+ilo_hostname: ilo-xenserver01.example.com
+ilo_ip: 192.168.1.201
+ilo_username: "{{ vault_ilo_username }}"
+ilo_password: "{{ vault_ilo_password }}"
+
+# Server Hardware Details
+server_model: "HP DL385 Gen11"
+server_serial: "SN123456"
+
+# Network Configuration
+# 4 NICs: 2 for management (bond), 2 for data (bond)
+network_interfaces:
+  # Management Network (Bond)
+  - name: eth0
+    mac: "AA:BB:CC:DD:EE:01"
+    purpose: management
+    bond: bond0
+    bond_mode: active-backup
+    
+  - name: eth1
+    mac: "AA:BB:CC:DD:EE:02"
+    purpose: management
+    bond: bond0
+    bond_mode: active-backup
+    
+  # Data Network (Bond)
+  - name: eth2
+    mac: "AA:BB:CC:DD:EE:03"
+    purpose: data
+    bond: bond1
+    bond_mode: "802.3ad"
+    
+  - name: eth3
+    mac: "AA:BB:CC:DD:EE:04"
+    purpose: data
+    bond: bond1
+    bond_mode: "802.3ad"
+
+# Management Network IP Configuration
+management_ip: 192.168.1.101
+management_netmask: 255.255.255.0
+management_gateway: 192.168.1.1
+management_dns:
+  - 8.8.8.8
+  - 8.8.4.4
+
+# XenServer Specific
+xenserver_hostname: xenserver01.example.com
+
+# Pool Configuration
+xenserver_pool_master: true  # This server will be the pool master
+xenserver_pool_role: "master"  # Options: master, member
+
+# Storage Configuration
+raid_config:
+  type: raid1
+  disks:
+    - /dev/sda
+    - /dev/sdb
+  use_all_space: true
+
+# Data Network VLAN
+data_vlan: 200
+data_network_name: "VM-Network"

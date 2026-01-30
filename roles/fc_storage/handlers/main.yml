@@ -1,0 +1,7 @@
+---
+# Handlers for fc_storage role
+
+- name: restart multipathd
+  ansible.builtin.systemd:
+    name: multipathd
+    state: restarted

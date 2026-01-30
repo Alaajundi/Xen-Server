@@ -1,0 +1,16 @@
+---
+# Default variables for xenserver_install role
+
+# Installation monitoring
+max_installation_time: 3600  # 1 hour
+check_interval: 60  # Check every 60 seconds
+ssh_port: 22
+
+# Installation phases
+expected_installation_phases:
+  - "Booting from ISO"
+  - "Starting installation"
+  - "Installing packages"
+  - "Configuring system"
+  - "Finalizing installation"
+  - "Rebooting"

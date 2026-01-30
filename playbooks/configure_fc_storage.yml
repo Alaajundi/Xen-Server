@@ -1,0 +1,109 @@
+---
+# Playbook: Configure Fiber Channel Storage
+# Purpose: Setup FC shared storage for live VM migration (vMotion equivalent)
+# Run on already-installed XenServer hosts
+
+- name: Configure Fiber Channel Shared Storage
+  hosts: xenservers
+  gather_facts: true
+  serial: 1  # Configure one at a time to avoid SR conflicts
+  
+  tasks:
+    - name: Pre-flight checks
+      block:
+        - name: Verify XenServer is installed
+          ansible.builtin.command: xe host-list --minimal
+          register: xe_check
+          changed_when: false
+          failed_when: xe_check.rc != 0
+          
+        - name: Check for FC HBAs
+          ansible.builtin.shell: ls /sys/class/fc_host/ 2>/dev/null | wc -l
+          register: fc_hba_count
+          changed_when: false
+          
+        - name: Fail if no FC HBAs detected
+          ansible.builtin.fail:
+            msg: "No Fiber Channel HBAs detected on {{ inventory_hostname }}"
+          when: fc_hba_count.stdout | int == 0
+          
+      tags:
+        - validation
+
+    - name: Display FC configuration plan
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "Fiber Channel Storage Configuration"
+          - "=========================================="
+          - "Host: {{ inventory_hostname }}"
+          - "Role: {{ 'Pool Master (Creates SR)' if xenserver_pool_master else 'Pool Member (Connects to SR)' }}"
+          - "SR Name: {{ fc_sr_name }}"
+          - "Set as Default: {{ set_fc_sr_as_default }}"
+          - "FC HBAs detected: {{ fc_hba_count.stdout }}"
+          - "=========================================="
+      tags:
+        - info
+
+    - name: Configure FC storage
+      ansible.builtin.include_role:
+        name: fc_storage
+      tags:
+        - fc_storage
+
+    - name: Verify storage configuration
+      block:
+        - name: List all Storage Repositories
+          ansible.builtin.command: xe sr-list type=lvmohba params=name-label,uuid,shared
+          register: sr_list
+          changed_when: false
+          
+        - name: Get default SR
+          ansible.builtin.shell: |
+            POOL_UUID=$(xe pool-list --minimal)
+            xe pool-param-get uuid=$POOL_UUID param-name=default-SR | xargs -I {} xe sr-param-get uuid={} param-name=name-label
+          register: default_sr
+          changed_when: false
+          
+        - name: Display storage summary
+          ansible.builtin.debug:
+            msg:
+              - "Storage Repositories:"
+              - "{{ sr_list.stdout }}"
+              - ""
+              - "Default SR: {{ default_sr.stdout }}"
+      tags:
+        - verify
+
+- name: Post-configuration summary
+  hosts: xenservers
+  gather_facts: false
+  run_once: true
+  
+  tasks:
+    - name: Display live migration instructions
+      ansible.builtin.debug:
+        msg:
+          - ""
+          - "=========================================="
+          - "✓ Fiber Channel Storage Configured"
+          - "=========================================="
+          - ""
+          - "Live Migration (vMotion equivalent) is now enabled!"
+          - ""
+          - "Create VMs on FC storage:"
+          - "  xe vm-install template=TEMPLATE sr-uuid=SR_UUID new-name-label=VM_NAME"
+          - ""
+          - "Live migrate a VM (like vMotion):"
+          - "  xe vm-migrate vm=VM_NAME host=xenserver02 live=true"
+          - ""
+          - "Migrate VM with its storage:"
+          - "  xe vm-migrate vm=VM_NAME host=xenserver02 live=true"
+          - ""
+          - "Check VM location:"
+          - "  xe vm-list params=name-label,resident-on"
+          - ""
+          - "All VMs on FC storage can migrate between any pool member!"
+          - "=========================================="
+      tags:
+        - summary

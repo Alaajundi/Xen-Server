@@ -1,0 +1,72 @@
+---
+# Tasks for xenserver_answerfile role - Generates answer files for unattended installation
+
+- name: Ensure answerfile directory exists
+  ansible.builtin.file:
+    path: "{{ answerfile_output_dir }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - answerfile
+
+- name: Generate XenServer answer file for {{ inventory_hostname }}
+  ansible.builtin.template:
+    src: answerfile.xml.j2
+    dest: "{{ answerfile_output_dir }}/answerfile_{{ inventory_hostname }}.xml"
+    mode: '0644'
+  delegate_to: localhost
+  tags:
+    - answerfile
+    - generate
+
+- name: Generate post-installation script for {{ inventory_hostname }}
+  ansible.builtin.template:
+    src: post_install.sh.j2
+    dest: "{{ answerfile_output_dir }}/post_install_{{ inventory_hostname }}.sh"
+    mode: '0755'
+  delegate_to: localhost
+  tags:
+    - answerfile
+    - postinstall
+
+- name: Validate answer file syntax
+  ansible.builtin.command:
+    cmd: xmllint --noout "{{ answerfile_output_dir }}/answerfile_{{ inventory_hostname }}.xml"
+  delegate_to: localhost
+  register: xml_validation
+  failed_when: false
+  changed_when: false
+  tags:
+    - answerfile
+    - validation
+
+- name: Display answer file validation result
+  ansible.builtin.debug:
+    msg: >
+      {% if xml_validation.rc == 0 %}
+      Answer file validated successfully: answerfile_{{ inventory_hostname }}.xml
+      {% else %}
+      WARNING: xmllint not found or validation failed. Install libxml2-utils for validation.
+      {% endif %}
+  tags:
+    - answerfile
+    - validation
+
+- name: Create answer file URL list
+  ansible.builtin.set_fact:
+    answer_file_full_url: "{{ answer_file_url }}/answerfile_{{ inventory_hostname }}.xml"
+  tags:
+    - answerfile
+
+- name: Display generated files information
+  ansible.builtin.debug:
+    msg:
+      - "Answer file generated: {{ answerfile_output_dir }}/answerfile_{{ inventory_hostname }}.xml"
+      - "Post-install script: {{ answerfile_output_dir }}/post_install_{{ inventory_hostname }}.sh"
+      - "Answer file URL: {{ answer_file_full_url }}"
+      - "These files will be fetched by XenServer installer via HTTP"
+  tags:
+    - answerfile
+    - info

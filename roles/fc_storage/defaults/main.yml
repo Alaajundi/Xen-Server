@@ -1,0 +1,16 @@
+---
+# Default variables for fc_storage role
+
+# Enable Fiber Channel storage configuration
+fc_storage_enabled: false
+
+# Storage Repository settings
+fc_sr_name: "FC-Shared-Storage"
+fc_sr_description: "Fiber Channel Shared Storage for VMs"
+create_fc_sr: true
+set_fc_sr_as_default: true
+
+# Multipath settings
+multipath_path_grouping: "group_by_prio"
+multipath_failback: "immediate"
+multipath_no_path_retry: 5
